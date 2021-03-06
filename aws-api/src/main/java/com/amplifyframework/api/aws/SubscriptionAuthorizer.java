@@ -19,6 +19,8 @@ import android.net.Uri;
 
 import com.amplifyframework.AmplifyException;
 import com.amplifyframework.api.ApiException;
+import com.amplifyframework.api.aws.auth.AuthModeStrategy;
+import com.amplifyframework.api.aws.auth.DefaultAuthModeStrategy;
 import com.amplifyframework.api.aws.sigv4.ApiKeyAuthProvider;
 import com.amplifyframework.api.aws.sigv4.AppSyncV4Signer;
 import com.amplifyframework.api.aws.sigv4.CognitoUserPoolsAuthProvider;
@@ -26,6 +28,7 @@ import com.amplifyframework.api.aws.sigv4.DefaultCognitoUserPoolsAuthProvider;
 import com.amplifyframework.api.aws.sigv4.OidcAuthProvider;
 import com.amplifyframework.api.graphql.GraphQLRequest;
 import com.amplifyframework.core.Amplify;
+import com.amplifyframework.core.model.ModelOperation;
 
 import com.amazonaws.DefaultRequest;
 import com.amazonaws.auth.AWSCredentialsProvider;
@@ -44,14 +47,26 @@ final class SubscriptionAuthorizer {
 
     private final ApiConfiguration configuration;
     private final ApiAuthProviders authProviders;
+    private final AuthModeStrategy authModeStrategy;
 
     SubscriptionAuthorizer(ApiConfiguration configuration) {
-        this(configuration, ApiAuthProviders.noProviderOverrides());
+        this(configuration,
+             ApiAuthProviders.noProviderOverrides(),
+             new DefaultAuthModeStrategy(configuration.getAuthorizationType()));
     }
 
-    SubscriptionAuthorizer(ApiConfiguration configuration, ApiAuthProviders authProviders) {
+    SubscriptionAuthorizer(ApiConfiguration configuration, AuthModeStrategy authModeStrategy) {
+        this(configuration, ApiAuthProviders.noProviderOverrides(), authModeStrategy);
+    }
+
+    SubscriptionAuthorizer(ApiConfiguration configuration,
+                           ApiAuthProviders authProviders,
+                           AuthModeStrategy authModeStrategy) {
         this.configuration = configuration;
         this.authProviders = authProviders;
+        this.authModeStrategy = authModeStrategy != null ?
+                                    authModeStrategy :
+                                    new DefaultAuthModeStrategy(configuration.getAuthorizationType());
     }
 
     /**
@@ -64,12 +79,14 @@ final class SubscriptionAuthorizer {
     /**
      * Return authorization json to be used explicitly for establishing connection.
      */
-    JSONObject createHeadersForConnection() throws ApiException {
-        return createHeaders(null, true);
+    JSONObject createHeadersForConnection(GraphQLRequest<?> request) throws ApiException {
+        return createHeaders(request, true);
     }
 
     private JSONObject createHeaders(GraphQLRequest<?> request, boolean connectionFlag) throws ApiException {
-        switch (configuration.getAuthorizationType()) {
+        AppSyncGraphQLRequest<?> graphQLRequest = (AppSyncGraphQLRequest<?>) request;
+        String modelName = graphQLRequest != null ? graphQLRequest.getModelSchema().getName() : null;
+        switch (authModeStrategy.authModeFor(modelName, ModelOperation.READ.name())) {
             case API_KEY:
                 ApiKeyAuthProvider keyProvider = authProviders.getApiKeyAuthProvider();
                 if (keyProvider == null) {

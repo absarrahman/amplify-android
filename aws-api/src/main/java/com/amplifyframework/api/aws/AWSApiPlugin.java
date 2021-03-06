@@ -23,6 +23,7 @@ import androidx.core.util.ObjectsCompat;
 
 import com.amplifyframework.api.ApiException;
 import com.amplifyframework.api.ApiPlugin;
+import com.amplifyframework.api.aws.auth.AuthModeStrategy;
 import com.amplifyframework.api.aws.auth.AuthRuleRequestDecorator;
 import com.amplifyframework.api.aws.operation.AWSRestOperation;
 import com.amplifyframework.api.events.ApiEndpointStatusChangeEvent;
@@ -50,7 +51,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -69,10 +69,10 @@ import okhttp3.Protocol;
 @SuppressWarnings("TypeParameterHidesVisibleType") // <R> shadows >com.amplifyframework.api.aws.R
 public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     private final Map<String, ClientDetails> apiDetails;
+    private final Map<String, ApiAuthProviders> apiAuthProviders;
+    private final Map<String, AuthModeStrategy> apiAuthModeStrategies;
     private final GraphQLResponse.Factory gqlResponseFactory;
-    private final ApiAuthProviders authProvider;
     private final ExecutorService executorService;
-    private final AuthRuleRequestDecorator requestDecorator;
 
     private final Set<String> restApis;
     private final Set<String> gqlApis;
@@ -85,6 +85,21 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     }
 
     /**
+     * Constructor that accepts a builder object.
+     * @param builder Instance of the builder object with options to be used by the plugin.
+     */
+    public AWSApiPlugin(Builder builder) {
+        this.apiDetails = new HashMap<>();
+        this.gqlResponseFactory = new GsonGraphQLResponseFactory();
+        this.restApis = new HashSet<>();
+        this.gqlApis = new HashSet<>();
+        this.executorService = Executors.newCachedThreadPool();
+
+        this.apiAuthProviders = builder.getApiAuthProviders();
+        this.apiAuthModeStrategies = builder.getAuthModeStrategy();
+    }
+
+    /**
      * Constructs an instance of AWSApiPlugin with
      * configured auth providers to override default modes
      * of authorization.
@@ -93,15 +108,17 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
      * mode of authorization.
      *
      * @param apiAuthProvider configured instance of {@link ApiAuthProviders}
+     * @deprecated See {@link AWSApiPlugin#AWSApiPlugin(Builder)}
      */
+    @Deprecated
     public AWSApiPlugin(@NonNull ApiAuthProviders apiAuthProvider) {
         this.apiDetails = new HashMap<>();
+        this.apiAuthModeStrategies = new HashMap<>();
+        this.apiAuthProviders = new HashMap<>();
         this.gqlResponseFactory = new GsonGraphQLResponseFactory();
-        this.authProvider = Objects.requireNonNull(apiAuthProvider);
         this.restApis = new HashSet<>();
         this.gqlApis = new HashSet<>();
         this.executorService = Executors.newCachedThreadPool();
-        this.requestDecorator = new AuthRuleRequestDecorator(authProvider);
     }
 
     @NonNull
@@ -119,22 +136,18 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
         AWSApiPluginConfiguration pluginConfig =
                 AWSApiPluginConfigurationReader.readFrom(pluginConfiguration);
 
-        final InterceptorFactory interceptorFactory =
-                new AppSyncSigV4SignerInterceptorFactory(authProvider);
-
         for (Map.Entry<String, ApiConfiguration> entry : pluginConfig.getApis().entrySet()) {
             final String apiName = entry.getKey();
             final ApiConfiguration apiConfiguration = entry.getValue();
             final EndpointType endpointType = apiConfiguration.getEndpointType();
             final OkHttpClient.Builder builder = new OkHttpClient.Builder();
+            final ApiAuthProviders authProvider = apiAuthProviders.get(apiName);
             builder.addNetworkInterceptor(UserAgentInterceptor.using(UserAgent::string));
             builder.eventListener(new ApiConnectionEventListener());
-            if (apiConfiguration.getAuthorizationType() != AuthorizationType.NONE) {
-                builder.addInterceptor(interceptorFactory.create(apiConfiguration));
-            }
+
             final OkHttpClient okHttpClient = builder.build();
             final SubscriptionAuthorizer subscriptionAuthorizer =
-                    new SubscriptionAuthorizer(apiConfiguration, authProvider);
+                    new SubscriptionAuthorizer(apiConfiguration, authProvider, apiAuthModeStrategies.get(apiName));
             final SubscriptionEndpoint subscriptionEndpoint =
                     new SubscriptionEndpoint(apiConfiguration, gqlResponseFactory, subscriptionAuthorizer);
             if (EndpointType.REST.equals(endpointType)) {
@@ -143,7 +156,12 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
             if (EndpointType.GRAPHQL.equals(endpointType)) {
                 gqlApis.add(apiName);
             }
-            apiDetails.put(apiName, new ClientDetails(apiConfiguration, okHttpClient, subscriptionEndpoint));
+            apiDetails.put(apiName, new ClientDetails(apiConfiguration,
+                                                      okHttpClient,
+                                                      subscriptionEndpoint,
+                                                      new AuthRuleRequestDecorator(authProvider),
+                                                      authProvider,
+                                                      apiAuthModeStrategies.get(apiName)));
         }
     }
 
@@ -282,7 +300,7 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
             AuthorizationType authType = clientDetails
                     .getApiConfiguration()
                     .getAuthorizationType();
-            authDecoratedRequest = requestDecorator.decorate(graphQLRequest, authType);
+            authDecoratedRequest = clientDetails.getRequestDecorator().decorate(graphQLRequest, authType);
         } catch (ApiException exception) {
             onSubscriptionFailure.accept(exception);
             return null;
@@ -572,6 +590,9 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
                 .client(clientDetails.getOkHttpClient())
                 .request(graphQLRequest)
                 .responseFactory(gqlResponseFactory)
+                .apiAuthProviders(clientDetails.getApiAuthProviders())
+                .authModeStrategy(clientDetails.getAuthModeStrategy())
+                .awsRegion(clientDetails.apiConfiguration.getRegion())
                 .onResponse(onResponse)
                 .onFailure(onFailure)
                 .build();
@@ -640,24 +661,41 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     }
 
     /**
+     * Get an instance of the plugin's builder object.
+     * @return Builder object that can be modified and then passed into the plugin's constructor.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
      * Wrapper class to pair http client with dedicated endpoint.
      */
     static final class ClientDetails {
         private final ApiConfiguration apiConfiguration;
         private final OkHttpClient okHttpClient;
         private final SubscriptionEndpoint subscriptionEndpoint;
+        private final AuthModeStrategy authModeStrategy;
+        private final ApiAuthProviders apiAuthProviders;
+        private final AuthRuleRequestDecorator requestDecorator;
 
         /**
          * Constructs a client detail object containing client and url.
          * It associates a http client with its dedicated endpoint.
          */
         ClientDetails(
-                final ApiConfiguration apiConfiguration,
-                final OkHttpClient okHttpClient,
-                final SubscriptionEndpoint subscriptionEndpoint) {
+            final ApiConfiguration apiConfiguration,
+            final OkHttpClient okHttpClient,
+            final SubscriptionEndpoint subscriptionEndpoint,
+            final AuthRuleRequestDecorator authRuleRequestDecorator,
+            final ApiAuthProviders apiAuthProviders,
+            final AuthModeStrategy authModeStrategy) {
             this.apiConfiguration = apiConfiguration;
             this.okHttpClient = okHttpClient;
             this.subscriptionEndpoint = subscriptionEndpoint;
+            this.requestDecorator = authRuleRequestDecorator;
+            this.authModeStrategy = authModeStrategy;
+            this.apiAuthProviders = apiAuthProviders;
         }
 
         ApiConfiguration getApiConfiguration() {
@@ -670,6 +708,18 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
 
         SubscriptionEndpoint getSubscriptionEndpoint() {
             return subscriptionEndpoint;
+        }
+
+        ApiAuthProviders getApiAuthProviders() {
+            return apiAuthProviders;
+        }
+
+        AuthModeStrategy getAuthModeStrategy() {
+            return authModeStrategy;
+        }
+
+        AuthRuleRequestDecorator getRequestDecorator() {
+            return requestDecorator;
         }
 
         @Override
@@ -734,6 +784,68 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
                 ApiEndpointStatusChangeEvent apiEndpointStatusChangeEvent = previousStatus.transitionTo(newStatus);
                 Amplify.Hub.publish(HubChannel.API, apiEndpointStatusChangeEvent.toHubEvent());
             }
+        }
+    }
+
+    /**
+     * Builder class used to set options for the API plugin.
+     */
+    public static final class Builder {
+        private final Map<String, ApiAuthProviders> apiAuthProvidersMap;
+        private final Map<String, AuthModeStrategy> authModeStrategyMap;
+
+        /**
+         * Default constructor for the API plugin builder.
+         */
+        Builder() {
+            this.apiAuthProvidersMap = new HashMap<>();
+            this.authModeStrategyMap = new HashMap<>();
+        }
+
+        /**
+         * Build the plugin passing this instance of the builder.
+         * @return An instance of the API plugin.
+         */
+        public AWSApiPlugin build() {
+            return new AWSApiPlugin(Builder.this);
+        }
+
+        /**
+         * Set the API auth providers for a given API.
+         * @param apiName The auth providers will be set on the API specified by this parameter.
+         * @param apiAuthProviders Auth providers to be used by the associated API.
+         * @return The builder object with the auth provider set.
+         */
+        public Builder apiAuthProvider(String apiName, ApiAuthProviders apiAuthProviders) {
+            apiAuthProvidersMap.put(apiName, apiAuthProviders);
+            return this;
+        }
+
+        /**
+         * Set the API auth mode strategy for a given API.
+         * @param apiName The auth strategy will be set on the API specified by this parameter.
+         * @param authModeStrategy The auth strategy to be used for this API.
+         * @return The builder object with the auth strategy set.
+         */
+        public Builder apiAuthModeStrategy(String apiName, AuthModeStrategy authModeStrategy) {
+            authModeStrategyMap.put(apiName, authModeStrategy);
+            return this;
+        }
+
+        /**
+         * Get the map of auth providers for each configured API.
+         * @return A map of API names and their associated auth providers.
+         */
+        public Map<String, ApiAuthProviders> getApiAuthProviders() {
+            return apiAuthProvidersMap;
+        }
+
+        /**
+         * Get the map of auth mode strategies for each configured API.
+         * @return A map of API names and their associated auth strategy.
+         */
+        public Map<String, AuthModeStrategy> getAuthModeStrategy() {
+            return authModeStrategyMap;
         }
     }
 }

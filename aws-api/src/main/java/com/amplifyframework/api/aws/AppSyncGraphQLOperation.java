@@ -17,18 +17,27 @@ package com.amplifyframework.api.aws;
 
 import android.annotation.SuppressLint;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.amplifyframework.AmplifyException;
 import com.amplifyframework.api.ApiException;
+import com.amplifyframework.api.aws.auth.ApiKeyApiRequestSigner;
+import com.amplifyframework.api.aws.auth.ApiRequestSigner;
+import com.amplifyframework.api.aws.auth.AuthModeStrategy;
+import com.amplifyframework.api.aws.auth.IamApiRequestSigner;
+import com.amplifyframework.api.aws.auth.JWTTokenApiRequestSigner;
 import com.amplifyframework.api.graphql.GraphQLOperation;
 import com.amplifyframework.api.graphql.GraphQLRequest;
 import com.amplifyframework.api.graphql.GraphQLResponse;
+import com.amplifyframework.api.graphql.MutationType;
 import com.amplifyframework.core.Amplify;
 import com.amplifyframework.core.Consumer;
+import com.amplifyframework.core.model.ModelOperation;
 import com.amplifyframework.logging.Logger;
 
 import java.io.IOException;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -53,6 +62,9 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
     private final OkHttpClient client;
     private final Consumer<GraphQLResponse<R>> onResponse;
     private final Consumer<ApiException> onFailure;
+    private final AuthModeStrategy authModeStrategy;
+    private final ApiAuthProviders apiAuthProviders;
+    private final String awsRegion;
 
     private Call ongoingCall;
 
@@ -65,18 +77,25 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
      * @param onResponse Invoked when response is attained from endpoint
      * @param onFailure Invoked upon failure to obtain response from endpoint
      */
+    @SuppressWarnings("ParameterNumber")
     private AppSyncGraphQLOperation(
             @NonNull String endpoint,
             @NonNull OkHttpClient client,
             @NonNull GraphQLRequest<R> request,
             @NonNull GraphQLResponse.Factory responseFactory,
+            @NonNull AuthModeStrategy authModeStrategy,
+            @NonNull ApiAuthProviders apiAuthProviders,
+            @Nullable String awsRegion,
             @NonNull Consumer<GraphQLResponse<R>> onResponse,
             @NonNull Consumer<ApiException> onFailure) {
         super(request, responseFactory);
         this.endpoint = endpoint;
         this.client = client;
+        this.authModeStrategy = authModeStrategy;
+        this.apiAuthProviders = apiAuthProviders;
         this.onResponse = onResponse;
         this.onFailure = onFailure;
+        this.awsRegion = awsRegion;
     }
 
     @Override
@@ -85,15 +104,34 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
         if (ongoingCall != null && ongoingCall.isExecuted()) {
             return;
         }
+        AppSyncGraphQLRequest<?> graphQLRequest = (AppSyncGraphQLRequest<?>) getRequest();
+        String schemaName = graphQLRequest.getModelSchema().getName();
+        String operationName = null;
+        if (graphQLRequest.getOperation() instanceof MutationType) {
+            operationName = ((MutationType) graphQLRequest.getOperation()).name();
+        } else {
+            operationName = ModelOperation.READ.name();
+        }
+        AuthorizationType authorizationType = authModeStrategy.authModeFor(schemaName, operationName);
+
+        Request request = new Request.Builder()
+            .url(endpoint)
+            .addHeader("accept", CONTENT_TYPE)
+            .addHeader("content-type", CONTENT_TYPE)
+            .post(RequestBody.create(getRequest().getContent(), MediaType.parse(CONTENT_TYPE)))
+            .build();
+        try {
+            request = getRequestSigner(authorizationType).sign(request);
+        } catch (IOException error) {
+            onFailure.accept(new ApiException(
+                "Failed to sign the request using " + authorizationType,
+                error, AmplifyException.TODO_RECOVERY_SUGGESTION
+            ));
+        }
 
         try {
             LOG.debug("Request: " + getRequest().getContent());
-            ongoingCall = client.newCall(new Request.Builder()
-                    .url(endpoint)
-                    .addHeader("accept", CONTENT_TYPE)
-                    .addHeader("content-type", CONTENT_TYPE)
-                    .post(RequestBody.create(getRequest().getContent(), MediaType.parse(CONTENT_TYPE)))
-                    .build());
+            ongoingCall = client.newCall(request);
             ongoingCall.enqueue(new OkHttpCallback());
         } catch (Exception error) {
             // Cancel if possible
@@ -105,6 +143,42 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
                 "OkHttp client failed to make a successful request.",
                 error, AmplifyException.TODO_RECOVERY_SUGGESTION
             ));
+        }
+    }
+
+    ApiRequestSigner getRequestSigner(AuthorizationType authorizationType) {
+        switch (authorizationType) {
+            case AMAZON_COGNITO_USER_POOLS:
+                return new JWTTokenApiRequestSigner(new Supplier<String>() {
+                    @Override
+                    public String get() {
+                        try {
+                            return apiAuthProviders.getCognitoUserPoolsAuthProvider().getLatestAuthToken();
+                        } catch (ApiException apiException) {
+                            LOG.error("Failed to retrieve token from CognitoUserPoolsAuthProvider", apiException);
+                            return null;
+                        }
+                    }
+                });
+            case OPENID_CONNECT:
+                return new JWTTokenApiRequestSigner(new Supplier<String>() {
+                    @Override
+                    public String get() {
+                        try {
+                            return apiAuthProviders.getOidcAuthProvider().getLatestAuthToken();
+                        } catch (ApiException apiException) {
+                            LOG.error("Failed to retrieve token from OidcAuthProvider", apiException);
+                            return null;
+                        }
+                    }
+                });
+            case API_KEY:
+                return new ApiKeyApiRequestSigner(apiAuthProviders.getApiKeyAuthProvider());
+            case AWS_IAM:
+                return new IamApiRequestSigner(awsRegion, apiAuthProviders.getAWSCredentialsProvider());
+            default:
+                return null;
+
         }
     }
 
@@ -158,6 +232,9 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
         private GraphQLResponse.Factory responseFactory;
         private Consumer<GraphQLResponse<R>> onResponse;
         private Consumer<ApiException> onFailure;
+        private ApiAuthProviders apiAuthProviders;
+        private AuthModeStrategy authModeStrategy;
+        private String awsRegion;
 
         Builder<R> endpoint(@NonNull String endpoint) {
             this.endpoint = Objects.requireNonNull(endpoint);
@@ -189,6 +266,21 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
             return this;
         }
 
+        public Builder<R> apiAuthProviders(ApiAuthProviders apiAuthProviders) {
+            this.apiAuthProviders = apiAuthProviders;
+            return this;
+        }
+
+        public Builder<R> authModeStrategy(AuthModeStrategy authModeStrategy) {
+            this.authModeStrategy = authModeStrategy;
+            return this;
+        }
+
+        public Builder<R> awsRegion(String awsRegion) {
+            this.awsRegion = awsRegion;
+            return this;
+        }
+
         @SuppressLint("SyntheticAccessor")
         AppSyncGraphQLOperation<R> build() {
             return new AppSyncGraphQLOperation<>(
@@ -196,6 +288,9 @@ public final class AppSyncGraphQLOperation<R> extends GraphQLOperation<R> {
                 Objects.requireNonNull(client),
                 Objects.requireNonNull(request),
                 Objects.requireNonNull(responseFactory),
+                Objects.requireNonNull(authModeStrategy),
+                Objects.requireNonNull(apiAuthProviders),
+                awsRegion,
                 Objects.requireNonNull(onResponse),
                 Objects.requireNonNull(onFailure)
             );
