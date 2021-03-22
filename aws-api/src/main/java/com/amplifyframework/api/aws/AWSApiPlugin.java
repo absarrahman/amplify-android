@@ -52,6 +52,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -84,21 +85,6 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
      */
     public AWSApiPlugin() {
         this(builder());
-    }
-
-    /**
-     * Constructor that accepts a builder object.
-     * @param builder Instance of the builder object with options to be used by the plugin.
-     */
-    public AWSApiPlugin(Builder builder) {
-        this.apiDetails = new HashMap<>();
-        this.gqlResponseFactory = new GsonGraphQLResponseFactory();
-        this.restApis = new HashSet<>();
-        this.gqlApis = new HashSet<>();
-        this.executorService = Executors.newCachedThreadPool();
-
-        this.apiAuthProviders = builder.getApiAuthProviders();
-        this.apiAuthModeStrategies = builder.getAuthModeStrategy();
     }
 
     /**
@@ -672,14 +658,6 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
         );
         operation.start();
         return operation;
-    }
-
-    /**
-     * Get an instance of the plugin's builder object.
-     * @return Builder object that can be modified and then passed into the plugin's constructor.
-     */
-    public static Builder builder() {
-        return new Builder();
     }
 
     /**
