@@ -40,6 +40,7 @@ import com.amplifyframework.core.Action;
 import com.amplifyframework.core.Amplify;
 import com.amplifyframework.core.Consumer;
 import com.amplifyframework.hub.HubChannel;
+import com.amplifyframework.util.Immutable;
 import com.amplifyframework.util.UserAgent;
 
 import org.json.JSONObject;
@@ -71,6 +72,7 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     private final Map<String, ClientDetails> apiDetails;
     private final Map<String, ApiAuthProviders> apiAuthProviders;
     private final Map<String, AuthModeStrategy> apiAuthModeStrategies;
+    private final Map<String, OkHttpConfigurator> apiConfigurators;
     private final GraphQLResponse.Factory gqlResponseFactory;
     private final ExecutorService executorService;
 
@@ -78,10 +80,10 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     private final Set<String> gqlApis;
 
     /**
-     * Default constructor for this plugin without any override.
+     * Default constructor for this plugin without any overrides.
      */
     public AWSApiPlugin() {
-        this(ApiAuthProviders.noProviderOverrides());
+        this(builder());
     }
 
     /**
@@ -100,18 +102,16 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     }
 
     /**
-     * Constructs an instance of AWSApiPlugin with
-     * configured auth providers to override default modes
-     * of authorization.
-     * If no Auth provider implementation is provided, then
-     * the plugin will assume default behavior for that specific
-     * mode of authorization.
-     *
-     * @param apiAuthProvider configured instance of {@link ApiAuthProviders}
-     * @deprecated See {@link AWSApiPlugin#AWSApiPlugin(Builder)}
+     * Deprecated. Use {@link #builder()} instead.
+     * @param apiAuthProvider Don't use this
+     * @deprecated Use the fluent {@link #builder()}, instead.
      */
     @Deprecated
     public AWSApiPlugin(@NonNull ApiAuthProviders apiAuthProvider) {
+        this(builder().apiAuthProviders(apiAuthProvider));
+    }
+
+    private AWSApiPlugin(@NonNull Builder builder) {
         this.apiDetails = new HashMap<>();
         this.apiAuthModeStrategies = new HashMap<>();
         this.apiAuthProviders = new HashMap<>();
@@ -119,6 +119,15 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
         this.restApis = new HashSet<>();
         this.gqlApis = new HashSet<>();
         this.executorService = Executors.newCachedThreadPool();
+        this.apiConfigurators = Immutable.of(builder.apiConfigurators);
+    }
+
+    /**
+     * Begins construction of a new AWSApiPlugin instance by using a fluent builder.
+     * @return A builder to help construct an AWSApiPlugin
+     */
+    public static Builder builder() {
+        return new Builder();
     }
 
     @NonNull
@@ -145,7 +154,12 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
             builder.addNetworkInterceptor(UserAgentInterceptor.using(UserAgent::string));
             builder.eventListener(new ApiConnectionEventListener());
 
+            OkHttpConfigurator configurator = apiConfigurators.get(apiName);
+            if (configurator != null) {
+                configurator.applyConfiguration(builder);
+            }
             final OkHttpClient okHttpClient = builder.build();
+
             final SubscriptionAuthorizer subscriptionAuthorizer =
                     new SubscriptionAuthorizer(apiConfiguration, authProvider, apiAuthModeStrategies.get(apiName));
             final SubscriptionEndpoint subscriptionEndpoint =
@@ -788,26 +802,46 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     }
 
     /**
-     * Builder class used to set options for the API plugin.
+     * Builds an {@link AWSApiPlugin}.
      */
     public static final class Builder {
+        private ApiAuthProviders apiAuthProviders;
+        private final Map<String, OkHttpConfigurator> apiConfigurators;
         private final Map<String, ApiAuthProviders> apiAuthProvidersMap;
         private final Map<String, AuthModeStrategy> authModeStrategyMap;
 
-        /**
-         * Default constructor for the API plugin builder.
-         */
-        Builder() {
+        private Builder() {
             this.apiAuthProvidersMap = new HashMap<>();
             this.authModeStrategyMap = new HashMap<>();
+            this.apiConfigurators = new HashMap<>();
         }
 
         /**
-         * Build the plugin passing this instance of the builder.
-         * @return An instance of the API plugin.
+         * Specify authentication providers.
+         * @param apiAuthProviders A set of authentication providers to use for API calls
+         * @return Current builder instance, for fluent construction of plugin
          */
-        public AWSApiPlugin build() {
-            return new AWSApiPlugin(Builder.this);
+        @NonNull
+        public Builder apiAuthProviders(@NonNull ApiAuthProviders apiAuthProviders) {
+            Objects.requireNonNull(apiAuthProviders);
+            Builder.this.apiAuthProviders = apiAuthProviders;
+            return Builder.this;
+        }
+
+        /**
+         * Apply customizations to an underlying OkHttpClient that will be used
+         * for a particular API.
+         * @param forApiName The name of the API for which these customizations should apply.
+                             This can be found in your `amplifyconfiguration.json` file.
+         * @param byConfigurator A lambda that hands the user an OkHttpClient.Builder,
+         *                       and enables the user to set come configurations on it.
+         * @return A builder instance, to continue chaining configurations
+         */
+        @NonNull
+        public Builder configureClient(
+                @NonNull String forApiName, @NonNull OkHttpConfigurator byConfigurator) {
+            this.apiConfigurators.put(forApiName, byConfigurator);
+            return this;
         }
 
         /**
@@ -833,19 +867,12 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
         }
 
         /**
-         * Get the map of auth providers for each configured API.
-         * @return A map of API names and their associated auth providers.
+         * Builds an {@link AWSApiPlugin}.
+         * @return An AWSApiPlugin
          */
-        public Map<String, ApiAuthProviders> getApiAuthProviders() {
-            return apiAuthProvidersMap;
-        }
-
-        /**
-         * Get the map of auth mode strategies for each configured API.
-         * @return A map of API names and their associated auth strategy.
-         */
-        public Map<String, AuthModeStrategy> getAuthModeStrategy() {
-            return authModeStrategyMap;
+        @NonNull
+        public AWSApiPlugin build() {
+            return new AWSApiPlugin(Builder.this);
         }
     }
 }
