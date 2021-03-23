@@ -17,6 +17,7 @@ package com.amplifyframework.api.aws;
 
 import com.amplifyframework.api.ApiException;
 import com.amplifyframework.api.aws.sigv4.CognitoUserPoolsAuthProvider;
+import com.amplifyframework.testmodels.commentsblog.Blog;
 import com.amplifyframework.testutils.random.RandomString;
 
 import com.amazonaws.auth.AWSCredentials;
@@ -74,8 +75,9 @@ public final class SubscriptionAuthorizerTest {
                 .region(RandomString.string())
                 .authorizationType(AuthorizationType.API_KEY)
                 .build();
-        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders);
-        JSONObject header = authorizer.createHeadersForConnection();
+        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders, null);
+        JSONObject header = authorizer.createHeadersForConnection(AppSyncGraphQLRequestFactory.buildQuery(Blog.class,
+                                                                                                          "DUMMY"));
         assertEquals(authenticationSecret, header.getString("x-api-key"));
     }
 
@@ -92,8 +94,9 @@ public final class SubscriptionAuthorizerTest {
                 .region(RandomString.string())
                 .authorizationType(AuthorizationType.AMAZON_COGNITO_USER_POOLS)
                 .build();
-        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders);
-        JSONObject header = authorizer.createHeadersForConnection();
+        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders, null);
+        JSONObject header = authorizer.createHeadersForConnection(AppSyncGraphQLRequestFactory.buildQuery(Blog.class,
+                                                                                                          "DUMMY"));
         assertEquals(authenticationSecret, header.getString("Authorization"));
     }
 
@@ -110,8 +113,9 @@ public final class SubscriptionAuthorizerTest {
                 .region(RandomString.string())
                 .authorizationType(AuthorizationType.OPENID_CONNECT)
                 .build();
-        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders);
-        JSONObject header = authorizer.createHeadersForConnection();
+        SubscriptionAuthorizer authorizer = new SubscriptionAuthorizer(config, apiAuthProviders, null);
+        JSONObject header = authorizer.createHeadersForConnection(AppSyncGraphQLRequestFactory.buildQuery(Blog.class,
+                                                                                                          "DUMMY"));
         assertEquals(authenticationSecret, header.getString("Authorization"));
     }
 

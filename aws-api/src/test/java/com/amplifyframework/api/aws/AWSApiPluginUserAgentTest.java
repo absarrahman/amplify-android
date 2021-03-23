@@ -15,6 +15,7 @@
 
 package com.amplifyframework.api.aws;
 
+import com.amplifyframework.api.aws.sigv4.ApiKeyAuthProvider;
 import com.amplifyframework.api.graphql.GraphQLRequest;
 import com.amplifyframework.api.graphql.PaginatedResult;
 import com.amplifyframework.api.graphql.model.ModelQuery;
@@ -69,7 +70,16 @@ public final class AWSApiPluginUserAgentTest {
         server.start();
 
         // Set up the API
-        api = new AWSApiPlugin();
+        api = AWSApiPlugin.builder()
+                          .apiAuthProviders(ApiAuthProviders
+                                                .builder()
+                                                .apiKeyAuthProvider(new ApiKeyAuthProvider() {
+                                                    @Override
+                                                    public String getAPIKey() {
+                                                        return "";
+                                                    }
+                                                }).build())
+                          .build();
         JSONObject config = new JSONObject()
                 .put("name", new JSONObject()
                         .put("endpointType", "GraphQL")

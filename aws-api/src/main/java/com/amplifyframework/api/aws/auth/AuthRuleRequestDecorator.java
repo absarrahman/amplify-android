@@ -77,7 +77,9 @@ public final class AuthRuleRequestDecorator {
             @NonNull GraphQLRequest<R> request,
             @NonNull AuthorizationType authType
     ) throws ApiException {
-        if (!(request instanceof AppSyncGraphQLRequest)) {
+        if (!(request instanceof AppSyncGraphQLRequest) ||
+            AuthorizationType.API_KEY.equals(authType) ||
+            AuthorizationType.AWS_IAM.equals(authType)) {
             return request;
         }
 

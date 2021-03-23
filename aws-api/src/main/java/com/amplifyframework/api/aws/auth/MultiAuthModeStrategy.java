@@ -25,6 +25,7 @@ import com.amplifyframework.core.model.ModelSchema;
 import com.amplifyframework.logging.Logger;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -109,14 +110,15 @@ public class MultiAuthModeStrategy implements AuthModeStrategy {
     private Set<AuthorizationType> getProviderSequenceForRules(List<AuthRule> authRules) {
         Set<AuthorizationType> result = new LinkedHashSet<>();
 
-        authRules.sort(new Comparator<AuthRule>() {
+        Comparator<AuthRule> authRuleComparator = new Comparator<AuthRule>() {
             @Override
             public int compare(AuthRule authRule1, AuthRule authRule2) {
                 Integer o1Priority = Integer.valueOf(STRATEGY_PRIORITY.indexOf(authRule1.getAuthStrategy()));
                 Integer o2Priority = Integer.valueOf(STRATEGY_PRIORITY.indexOf(authRule2.getAuthStrategy()));
                 return o1Priority.compareTo(o2Priority);
             }
-        });
+        };
+        Collections.sort(authRules, authRuleComparator);
 
         for (AuthRule rule : authRules) {
             result.add(getAuthTypeForStrategy(rule.getAuthStrategy()));

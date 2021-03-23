@@ -25,6 +25,7 @@ import com.amplifyframework.api.ApiException;
 import com.amplifyframework.api.ApiPlugin;
 import com.amplifyframework.api.aws.auth.AuthModeStrategy;
 import com.amplifyframework.api.aws.auth.AuthRuleRequestDecorator;
+import com.amplifyframework.api.aws.auth.DefaultAuthModeStrategy;
 import com.amplifyframework.api.aws.operation.AWSRestOperation;
 import com.amplifyframework.api.events.ApiEndpointStatusChangeEvent;
 import com.amplifyframework.api.events.ApiEndpointStatusChangeEvent.ApiEndpointStatus;
@@ -39,6 +40,7 @@ import com.amplifyframework.api.rest.RestResponse;
 import com.amplifyframework.core.Action;
 import com.amplifyframework.core.Amplify;
 import com.amplifyframework.core.Consumer;
+import com.amplifyframework.core.model.ModelOperation;
 import com.amplifyframework.hub.HubChannel;
 import com.amplifyframework.util.Immutable;
 import com.amplifyframework.util.UserAgent;
@@ -71,6 +73,7 @@ import okhttp3.Protocol;
 @SuppressWarnings("TypeParameterHidesVisibleType") // <R> shadows >com.amplifyframework.api.aws.R
 public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
     private final Map<String, ClientDetails> apiDetails;
+    private final ApiAuthProviders globalAuthProviders;
     private final Map<String, ApiAuthProviders> apiAuthProviders;
     private final Map<String, AuthModeStrategy> apiAuthModeStrategies;
     private final Map<String, OkHttpConfigurator> apiConfigurators;
@@ -99,8 +102,9 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
 
     private AWSApiPlugin(@NonNull Builder builder) {
         this.apiDetails = new HashMap<>();
-        this.apiAuthModeStrategies = new HashMap<>();
-        this.apiAuthProviders = new HashMap<>();
+        this.globalAuthProviders = builder.apiAuthProviders;
+        this.apiAuthModeStrategies = builder.authModeStrategyMap;
+        this.apiAuthProviders = builder.apiAuthProvidersMap;
         this.gqlResponseFactory = new GsonGraphQLResponseFactory();
         this.restApis = new HashSet<>();
         this.gqlApis = new HashSet<>();
@@ -136,7 +140,19 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
             final ApiConfiguration apiConfiguration = entry.getValue();
             final EndpointType endpointType = apiConfiguration.getEndpointType();
             final OkHttpClient.Builder builder = new OkHttpClient.Builder();
-            final ApiAuthProviders authProvider = apiAuthProviders.get(apiName);
+
+            ApiAuthProviders authProvider = apiAuthProviders.get(apiName);
+            if (authProvider == null) {
+                authProvider = globalAuthProviders != null ?
+                                globalAuthProviders :
+                                ApiAuthProviders.noProviderOverrides();
+            }
+
+            AuthModeStrategy authModeStrategy = apiAuthModeStrategies.get(apiName);
+            if (authModeStrategy == null) {
+                authModeStrategy = new DefaultAuthModeStrategy(apiConfiguration.getAuthorizationType());
+            }
+
             builder.addNetworkInterceptor(UserAgentInterceptor.using(UserAgent::string));
             builder.eventListener(new ApiConnectionEventListener());
 
@@ -147,7 +163,7 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
             final OkHttpClient okHttpClient = builder.build();
 
             final SubscriptionAuthorizer subscriptionAuthorizer =
-                    new SubscriptionAuthorizer(apiConfiguration, authProvider, apiAuthModeStrategies.get(apiName));
+                    new SubscriptionAuthorizer(apiConfiguration, authProvider, authModeStrategy);
             final SubscriptionEndpoint subscriptionEndpoint =
                     new SubscriptionEndpoint(apiConfiguration, gqlResponseFactory, subscriptionAuthorizer);
             if (EndpointType.REST.equals(endpointType)) {
@@ -161,7 +177,7 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
                                                       subscriptionEndpoint,
                                                       new AuthRuleRequestDecorator(authProvider),
                                                       authProvider,
-                                                      apiAuthModeStrategies.get(apiName)));
+                                                      authModeStrategy));
         }
     }
 
@@ -294,12 +310,19 @@ public final class AWSApiPlugin extends ApiPlugin<Map<String, OkHttpClient>> {
         }
 
         final GraphQLRequest<R> authDecoratedRequest;
+        AuthorizationType authType = clientDetails
+            .getApiConfiguration()
+            .getAuthorizationType();
+
+        if (graphQLRequest instanceof AppSyncGraphQLRequest<?>) {
+            authType = clientDetails.authModeStrategy
+                                    .authModeFor(((AppSyncGraphQLRequest<?>) graphQLRequest).getModelSchema()
+                                                                                            .getName(),
+                                                    ModelOperation.READ.name());
+        }
 
         // Decorate the request according to the auth rule parameters.
         try {
-            AuthorizationType authType = clientDetails
-                    .getApiConfiguration()
-                    .getAuthorizationType();
             authDecoratedRequest = clientDetails.getRequestDecorator().decorate(graphQLRequest, authType);
         } catch (ApiException exception) {
             onSubscriptionFailure.accept(exception);

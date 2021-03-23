@@ -128,8 +128,10 @@ public final class OwnerBasedAuthTest {
         }
 
         plugin = AWSApiPlugin.builder()
-            .apiAuthProviders(providers)
-            .build();
+                             .apiAuthProvider(GRAPHQL_API_WITH_API_KEY, providers)
+                             .apiAuthProvider(GRAPHQL_API_WITH_COGNITO, providers)
+                             .apiAuthProvider(GRAPHQL_API_WITH_OIDC, providers)
+                             .build();
         plugin.configure(configuration, ApplicationProvider.getApplicationContext());
     }
 

@@ -18,6 +18,7 @@ package com.amplifyframework.api.aws;
 import androidx.test.core.app.ApplicationProvider;
 
 import com.amplifyframework.api.ApiException;
+import com.amplifyframework.api.aws.sigv4.ApiKeyAuthProvider;
 import com.amplifyframework.api.events.ApiChannelEventName;
 import com.amplifyframework.api.events.ApiEndpointStatusChangeEvent;
 import com.amplifyframework.api.graphql.GraphQLRequest;
@@ -91,6 +92,13 @@ public final class AWSApiPluginTest {
                 .put("authorizationType", "API_KEY")
                 .put("apiKey", "FAKE-API-KEY"));
 
+        ApiAuthProviders apiAuthProviders = ApiAuthProviders.builder().apiKeyAuthProvider(new ApiKeyAuthProvider() {
+            @Override
+            public String getAPIKey() {
+                return "FAKE-API-KEY";
+            }
+        }).build();
+
         this.plugin = AWSApiPlugin.builder()
             .configureClient("graphQlApi", builder -> {
                 builder.addInterceptor(chain -> {
@@ -101,6 +109,7 @@ public final class AWSApiPluginTest {
                 });
                 builder.connectTimeout(10, TimeUnit.SECONDS);
             })
+            .apiAuthProvider("graphQlApi", apiAuthProviders)
             .build();
         this.plugin.configure(configuration, ApplicationProvider.getApplicationContext());
     }
